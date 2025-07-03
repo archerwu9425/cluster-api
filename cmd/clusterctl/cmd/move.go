@@ -41,6 +41,7 @@ type moveOptions struct {
 	fromDirectory         string
 	toDirectory           string
 	dryRun                bool
+	delete                bool
 	hideAPIWarnings       string
 }
 
@@ -84,6 +85,8 @@ func init() {
 		"The namespace where the workload cluster is hosted. If unspecified, the current context's namespace is used.")
 	moveCmd.Flags().BoolVar(&mo.dryRun, "dry-run", false,
 		"Enable dry run, don't really perform the move actions")
+	moveCmd.Flags().BoolVar(&mo.delete, "delete", false,
+		"Enable delete, delete the resources from the source cluster. ")
 	moveCmd.Flags().StringVar(&mo.toDirectory, "to-directory", "",
 		"Write Cluster API objects and all dependencies from a management cluster to directory.")
 	moveCmd.Flags().StringVar(&mo.fromDirectory, "from-directory", "",
@@ -94,6 +97,8 @@ func init() {
 	moveCmd.MarkFlagsMutuallyExclusive("to-directory", "to-kubeconfig")
 	moveCmd.MarkFlagsMutuallyExclusive("from-directory", "to-directory")
 	moveCmd.MarkFlagsMutuallyExclusive("from-directory", "kubeconfig")
+	moveCmd.MarkFlagsMutuallyExclusive("delete", "to-kubeconfig")
+	moveCmd.MarkFlagsMutuallyExclusive("delete", "to-directory")
 
 	RootCmd.AddCommand(moveCmd)
 }
@@ -104,6 +109,7 @@ func runMove() error {
 	if mo.toDirectory == "" &&
 		mo.fromDirectory == "" &&
 		mo.toKubeconfig == "" &&
+		!mo.delete &&
 		!mo.dryRun {
 		return errors.New("please specify a target cluster using the --to-kubeconfig flag when not using --dry-run, --to-directory or --from-directory")
 	}
@@ -168,5 +174,6 @@ func runMove() error {
 		ToDirectory:    mo.toDirectory,
 		Namespace:      mo.namespace,
 		DryRun:         mo.dryRun,
+		Delete:         mo.delete,
 	})
 }

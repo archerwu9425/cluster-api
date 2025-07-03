@@ -80,8 +80,13 @@ func (o *objectMover) Move(ctx context.Context, namespace string, toCluster Clie
 		log.Info("********************************************************")
 	}
 
+	delete := false
+	if toCluster == nil {
+		delete = true
+	}
+
 	// checks that all the required providers in place in the target cluster.
-	if !o.dryRun {
+	if !o.dryRun && !delete {
 		if err := o.checkTargetProviders(ctx, toCluster.ProviderInventory()); err != nil {
 			return errors.Wrap(err, "failed to check providers in target cluster")
 		}
@@ -94,8 +99,11 @@ func (o *objectMover) Move(ctx context.Context, namespace string, toCluster Clie
 
 	// Move the objects to the target cluster.
 	var proxy Proxy
-	if !o.dryRun {
+	if !o.dryRun && !delete {
 		proxy = toCluster.Proxy()
+	}
+	if delete {
+		proxy = nil
 	}
 
 	return o.move(ctx, objectGraph, proxy, mutators...)
@@ -204,9 +212,9 @@ func (o *objectMover) getObjectGraph(ctx context.Context, namespace string) (*ob
 	// This is required because if the infrastructure is provisioned, then we can reasonably assume that the objects we are moving/backing up are
 	// not currently waiting for long-running reconciliation loops, and so we can safely rely on the pause field on the Cluster object
 	// for blocking any further object reconciliation on the source objects.
-	if err := o.checkProvisioningCompleted(ctx, objectGraph); err != nil {
-		return nil, errors.Wrap(err, "failed to check for provisioned infrastructure")
-	}
+	// if err := o.checkProvisioningCompleted(ctx, objectGraph); err != nil {
+	// 	return nil, errors.Wrap(err, "failed to check for provisioned infrastructure")
+	// }
 
 	// Check whether nodes are not included in GVK considered for move
 	objectGraph.checkVirtualNode()
@@ -335,17 +343,19 @@ func (o *objectMover) move(ctx context.Context, graph *objectGraph, toProxy Prox
 		return errors.Wrap(err, "error pausing ClusterClasses")
 	}
 
-	log.Info("Waiting for all resources to be ready to move")
-	// exponential backoff configuration which returns durations for a total time of ~2m.
-	// Example: 0, 5s, 8s, 11s, 17s, 26s, 38s, 57s, 86s, 128s
-	waitForMoveUnblockedBackoff := wait.Backoff{
-		Duration: 5 * time.Second,
-		Factor:   1.5,
-		Steps:    10,
-		Jitter:   0.1,
-	}
-	if err := waitReadyForMove(ctx, o.fromProxy, graph.getMoveNodes(), o.dryRun, waitForMoveUnblockedBackoff); err != nil {
-		return errors.Wrap(err, "error waiting for resources to be ready to move")
+	if toProxy != nil {
+		log.Info("Waiting for all resources to be ready to move")
+		// exponential backoff configuration which returns durations for a total time of ~2m.
+		// Example: 0, 5s, 8s, 11s, 17s, 26s, 38s, 57s, 86s, 128s
+		waitForMoveUnblockedBackoff := wait.Backoff{
+			Duration: 5 * time.Second,
+			Factor:   1.5,
+			Steps:    10,
+			Jitter:   0.1,
+		}
+		if err := waitReadyForMove(ctx, o.fromProxy, graph.getMoveNodes(), o.dryRun, waitForMoveUnblockedBackoff); err != nil {
+			return errors.Wrap(err, "error waiting for resources to be ready to move")
+		}
 	}
 
 	// Nb. DO NOT call ensureNamespaces at this point because:
@@ -359,11 +369,13 @@ func (o *objectMover) move(ctx context.Context, graph *objectGraph, toProxy Prox
 	// - then all the MachineSets, then all the Machines, etc.
 	moveSequence := getMoveSequence(graph)
 
-	// Create all objects group by group, ensuring all the ownerReferences are re-created.
-	log.Info("Creating objects in the target cluster")
-	for groupIndex := range len(moveSequence.groups) {
-		if err := o.createGroup(ctx, moveSequence.getGroup(groupIndex), toProxy, mutators...); err != nil {
-			return err
+	if toProxy != nil {
+		// Create all objects group by group, ensuring all the ownerReferences are re-created.
+		log.Info("Creating objects in the target cluster")
+		for groupIndex := range len(moveSequence.groups) {
+			if err := o.createGroup(ctx, moveSequence.getGroup(groupIndex), toProxy, mutators...); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -379,15 +391,21 @@ func (o *objectMover) move(ctx context.Context, graph *objectGraph, toProxy Prox
 		}
 	}
 
-	// Resume the ClusterClasses in the target management cluster, so the controllers start reconciling it.
-	log.V(1).Info("Resuming the target ClusterClasses")
-	if err := setClusterClassPause(ctx, toProxy, clusterClasses, false, o.dryRun, mutators...); err != nil {
-		return errors.Wrap(err, "error resuming ClusterClasses")
+	if toProxy != nil {
+		// Resume the ClusterClasses in the target management cluster, so the controllers start reconciling it.
+		log.V(1).Info("Resuming the target ClusterClasses")
+		if err := setClusterClassPause(ctx, toProxy, clusterClasses, false, o.dryRun, mutators...); err != nil {
+			return errors.Wrap(err, "error resuming ClusterClasses")
+		}
 	}
 
-	// Reset the pause field on the Cluster object in the target management cluster, so the controllers start reconciling it.
-	log.V(1).Info("Resuming the target cluster")
-	return setClusterPause(ctx, toProxy, clusters, false, o.dryRun, mutators...)
+	if toProxy != nil {
+		// Reset the pause field on the Cluster object in the target management cluster, so the controllers start reconciling it.
+		log.V(1).Info("Resuming the target cluster")
+		return setClusterPause(ctx, toProxy, clusters, false, o.dryRun, mutators...)
+	} else {
+		return nil
+	}
 }
 
 func (o *objectMover) toDirectory(ctx context.Context, graph *objectGraph, directory string) error {

@@ -51,12 +51,20 @@ type MoveOptions struct {
 
 	// DryRun means the move action is a dry run, no real action will be performed.
 	DryRun bool
+
+	// Delete means to delete the resources from the source cluster.
+	Delete bool
 }
 
 func (c *clusterctlClient) Move(ctx context.Context, options MoveOptions) error {
 	// Both backup and restore makes no sense. It's a complete move.
 	if options.FromDirectory != "" && options.ToDirectory != "" {
 		return errors.Errorf("can't set both FromDirectory and ToDirectory")
+	}
+
+	if !options.DryRun && options.Delete {
+		options.ToKubeconfig = (Kubeconfig{})
+		return c.delete(ctx, options)
 	}
 
 	if !options.DryRun &&
@@ -100,6 +108,25 @@ func (c *clusterctlClient) move(ctx context.Context, options MoveOptions) error 
 	}
 
 	return fromCluster.ObjectMover().Move(ctx, options.Namespace, toCluster, options.DryRun, options.ExperimentalResourceMutators...)
+}
+
+func (c *clusterctlClient) delete(ctx context.Context, options MoveOptions) error {
+	// Get the client for interacting with the source management cluster.
+	fromCluster, err := c.getClusterClient(ctx, options.FromKubeconfig)
+	if err != nil {
+		return err
+	}
+
+	// If the option specifying the Namespace is empty, try to detect it.
+	if options.Namespace == "" {
+		currentNamespace, err := fromCluster.Proxy().CurrentNamespace()
+		if err != nil {
+			return err
+		}
+		options.Namespace = currentNamespace
+	}
+
+	return fromCluster.ObjectMover().Move(ctx, options.Namespace, nil, options.DryRun, options.ExperimentalResourceMutators...)
 }
 
 func (c *clusterctlClient) fromDirectory(ctx context.Context, options MoveOptions) error {
